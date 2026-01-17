@@ -53,6 +53,7 @@ from src.sr_api import (
     wgr_rankings,
     tournament_scores_round,
 )
+from src.player_master import load_player_master
 from src.features import build_player_table
 from src.simulator import simulate_tournament
 from src.data_store import save_json
@@ -88,6 +89,17 @@ wgr = st.session_state.get("wgr")
 if not (sched and stats and wgr):
     st.info("Use the sidebar to load data.")
     st.stop()
+
+# Player Master (local file)
+try:
+    player_master = load_player_master(int(year))
+except Exception as e:
+    player_master = None
+    st.warning(
+        "Player Master not loaded. Names may be missing.\n\n"
+        f"Expected file: data/player_master/players_{int(year)}.json\n"
+        f"Error: {e}"
+    )
 
 tournaments = sched.get("tournaments", []) or []
 if not tournaments:
@@ -131,29 +143,14 @@ with a3:
 with a4:
     show_top = st.slider("Show Top N Players", 10, 200, 50, 5)
 
-players = build_player_table(stats, wgr)
+players = build_player_table(stats, wgr, player_master=player_master)
 
-# ---- NEW: guard against empty player table ----
 if players is None or len(players) == 0:
     st.error(
-        "No players were returned/parsed from the SportsRadar player statistics + WGR payloads. "
-        "This usually means the JSON structure differs from what our parser expects. "
-        "Click 'Fetch Debug Snapshot' below and send me the output."
+        "No players were returned/parsed from the SportsRadar payloads AND Player Master merge.\n\n"
+        "Double-check that data/player_master/players_YEAR.json exists and has a top-level 'players' list."
     )
-    if st.button("Fetch Debug Snapshot"):
-        st.write("stats_json top-level keys:", list(stats.keys()) if isinstance(stats, dict) else type(stats))
-        st.write("wgr_json top-level keys:", list(wgr.keys()) if isinstance(wgr, dict) else type(wgr))
-        # show small samples without dumping huge secrets
-        if isinstance(stats, dict):
-            for k in ["players", "statistics", "data"]:
-                if k in stats:
-                    st.write(f"stats['{k}'] type:", type(stats[k]), "len:", (len(stats[k]) if hasattr(stats[k], "__len__") else "n/a"))
-        if isinstance(wgr, dict):
-            for k in ["players", "rankings", "data"]:
-                if k in wgr:
-                    st.write(f"wgr['{k}'] type:", type(wgr[k]), "len:", (len(wgr[k]) if hasattr(wgr[k], "__len__") else "n/a"))
     st.stop()
-# ------------------------------------------------
 
 run = st.button("Run Simulation", type="primary")
 if run:

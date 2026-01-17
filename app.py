@@ -4,14 +4,10 @@ import hmac
 # ============================================================
 # PASSWORD GATE (Option A - plain password in Secrets)
 # ============================================================
-# Streamlit Secrets should contain:
-#
+# Secrets:
 # SPORTSRADAR_API_KEY="YOUR_KEY"
-#
 # [auth]
 # password_hash="signalai123"
-#
-# (We keep the key name "password_hash" for compatibility with what you already entered.)
 
 def verify_password(password: str) -> bool:
     auth = st.secrets.get("auth", {})
@@ -136,6 +132,28 @@ with a4:
     show_top = st.slider("Show Top N Players", 10, 200, 50, 5)
 
 players = build_player_table(stats, wgr)
+
+# ---- NEW: guard against empty player table ----
+if players is None or len(players) == 0:
+    st.error(
+        "No players were returned/parsed from the SportsRadar player statistics + WGR payloads. "
+        "This usually means the JSON structure differs from what our parser expects. "
+        "Click 'Fetch Debug Snapshot' below and send me the output."
+    )
+    if st.button("Fetch Debug Snapshot"):
+        st.write("stats_json top-level keys:", list(stats.keys()) if isinstance(stats, dict) else type(stats))
+        st.write("wgr_json top-level keys:", list(wgr.keys()) if isinstance(wgr, dict) else type(wgr))
+        # show small samples without dumping huge secrets
+        if isinstance(stats, dict):
+            for k in ["players", "statistics", "data"]:
+                if k in stats:
+                    st.write(f"stats['{k}'] type:", type(stats[k]), "len:", (len(stats[k]) if hasattr(stats[k], "__len__") else "n/a"))
+        if isinstance(wgr, dict):
+            for k in ["players", "rankings", "data"]:
+                if k in wgr:
+                    st.write(f"wgr['{k}'] type:", type(wgr[k]), "len:", (len(wgr[k]) if hasattr(wgr[k], "__len__") else "n/a"))
+    st.stop()
+# ------------------------------------------------
 
 run = st.button("Run Simulation", type="primary")
 if run:

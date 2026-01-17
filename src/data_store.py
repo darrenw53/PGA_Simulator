@@ -17,4 +17,3 @@ def load_latest(prefix: str):
     if not files:
         return None
     return json.loads(files[-1].read_text())
-

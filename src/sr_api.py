@@ -17,7 +17,6 @@ def _get(url: str) -> dict:
     r.raise_for_status()
     return r.json()
 
-# --- Endpoints you listed (examples) ---
 def pga_schedule(year: int) -> dict:
     return _get(f"{BASE}/golf/trial/pga/v3/en/{year}/tournaments/schedule.json")
 
@@ -35,4 +34,3 @@ def tournament_scores_round(year: int, tournament_id: str, round_no: str = "01")
 
 def tournament_hole_stats(year: int, tournament_id: str) -> dict:
     return _get(f"{BASE}/golf/trial/pga/v3/en/{year}/tournaments/{tournament_id}/hole-statistics.json")
-

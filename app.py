@@ -1,35 +1,22 @@
-﻿import streamlit as st
-import hashlib
+import streamlit as st
 import hmac
-import binascii
 
 # ============================================================
-# PASSWORD GATE (Option A)
+# PASSWORD GATE (Option A - plain password in Secrets)
 # ============================================================
-# Store a PBKDF2 hash in Streamlit Secrets:
-# [auth]
-# password_hash = "pbkdf2$200000$<salt_hex>$<hash_hex>"
+# Streamlit Secrets should contain:
 #
-# This file NEVER contains the plain password.
-
-def _pbkdf2_hash(password: str, salt: bytes, iterations: int) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+# SPORTSRADAR_API_KEY="YOUR_KEY"
+#
+# [auth]
+# password_hash="signalai123"
+#
+# (We keep the key name "password_hash" for compatibility with what you already entered.)
 
 def verify_password(password: str) -> bool:
     auth = st.secrets.get("auth", {})
     stored = auth.get("password_hash", "")
-
-    if not stored.startswith("pbkdf2$"):
-        return False
-
-    # format: pbkdf2$iterations$salt_hex$hash_hex
-    _, iter_s, salt_hex, hash_hex = stored.split("$", 3)
-    iterations = int(iter_s)
-    salt = binascii.unhexlify(salt_hex)
-    expected = binascii.unhexlify(hash_hex)
-
-    candidate = _pbkdf2_hash(password, salt, iterations)
-    return hmac.compare_digest(candidate, expected)
+    return hmac.compare_digest(str(password), str(stored))
 
 def login_gate():
     if st.session_state.get("auth_ok"):
@@ -53,7 +40,6 @@ def login_gate():
 
 login_gate()
 
-# Optional: logout in sidebar
 with st.sidebar:
     if st.button("Logout"):
         st.session_state.clear()
@@ -61,9 +47,10 @@ with st.sidebar:
 
 
 # ============================================================
-# YOUR APP STARTS HERE
+# APP
 # ============================================================
 import pandas as pd
+
 from src.sr_api import (
     pga_schedule,
     pga_player_stats,
@@ -81,7 +68,7 @@ with st.sidebar:
     year = st.number_input("Season Year", min_value=2020, max_value=2030, value=2026, step=1)
     load_btn = st.button("Load Schedule + Player Data", type="primary")
 
-@st.cache_data(show_spinner=False, ttl=60*60)
+@st.cache_data(show_spinner=False, ttl=60 * 60)
 def load_data(year: int):
     sched = pga_schedule(year)
     stats = pga_player_stats(year)
@@ -119,7 +106,7 @@ tourn_df["start_date"] = tourn_df.get("start_date", tourn_df.get("start_date_tim
 sel = st.selectbox(
     "Select Tournament",
     options=tourn_df.index.tolist(),
-    format_func=lambda i: f"{tourn_df.loc[i,'start_date']} — {tourn_df.loc[i,'name']}"
+    format_func=lambda i: f"{tourn_df.loc[i,'start_date']} — {tourn_df.loc[i,'name']}",
 )
 tournament_id = str(tourn_df.loc[sel, "id"])
 tournament_name = str(tourn_df.loc[sel, "name"])
@@ -163,7 +150,7 @@ if run:
             course_difficulty=float(course_diff),
             field_strength_mult=float(field_mult),
             volatility_mult=float(vol_mult),
-            rng_seed=int(rng_seed) if rng_seed else None
+            rng_seed=int(rng_seed) if rng_seed else None,
         )
 
     st.success("Done.")
@@ -173,26 +160,29 @@ if run:
         "Download Results CSV",
         data=res.to_csv(index=False).encode("utf-8"),
         file_name=f"sim_results_{year}_{tournament_id}.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
 
-    save_json({
-        "year": int(year),
-        "tournament_id": tournament_id,
-        "tournament_name": tournament_name,
-        "controls": {
-            "n_sims": int(n_sims),
-            "tour_mean": float(tour_mean),
-            "base_sd": float(base_sd),
-            "cut_n": int(cut_n),
-            "hot_cold": float(hot_cold),
-            "course_diff": float(course_diff),
-            "field_mult": float(field_mult),
-            "vol_mult": float(vol_mult),
-            "seed": int(rng_seed),
+    save_json(
+        {
+            "year": int(year),
+            "tournament_id": tournament_id,
+            "tournament_name": tournament_name,
+            "controls": {
+                "n_sims": int(n_sims),
+                "tour_mean": float(tour_mean),
+                "base_sd": float(base_sd),
+                "cut_n": int(cut_n),
+                "hot_cold": float(hot_cold),
+                "course_diff": float(course_diff),
+                "field_mult": float(field_mult),
+                "vol_mult": float(vol_mult),
+                "seed": int(rng_seed),
+            },
+            "results_preview": res.head(200).to_dict(orient="records"),
         },
-        "results_preview": res.head(200).to_dict(orient="records")
-    }, name=f"projection_{year}_{tournament_id}")
+        name=f"projection_{year}_{tournament_id}",
+    )
 
 st.markdown("---")
 st.subheader("Weekly Learning (v1)")

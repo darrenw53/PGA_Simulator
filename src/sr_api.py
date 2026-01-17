@@ -26,11 +26,5 @@ def pga_player_stats(year: int) -> dict:
 def wgr_rankings(year: int) -> dict:
     return _get(f"{BASE}/golf/trial/v3/en/players/wgr/{year}/rankings.json")
 
-def tournament_summary(year: int, tournament_id: str) -> dict:
-    return _get(f"{BASE}/golf/trial/pga/v3/en/{year}/tournaments/{tournament_id}/summary.json")
-
 def tournament_scores_round(year: int, tournament_id: str, round_no: str = "01") -> dict:
     return _get(f"{BASE}/golf/trial/pga/v3/en/{year}/tournaments/{tournament_id}/rounds/{round_no}/scores.json")
-
-def tournament_hole_stats(year: int, tournament_id: str) -> dict:
-    return _get(f"{BASE}/golf/trial/pga/v3/en/{year}/tournaments/{tournament_id}/hole-statistics.json")

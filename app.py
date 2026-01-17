@@ -1,29 +1,20 @@
 from __future__ import annotations
 
-import itertools
 from pathlib import Path
-from dataclasses import asdict
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.file_loader import WeeklyData, load_weekly_data, list_week_folders
+from src.file_loader import WeeklyData, load_weekly_data, list_week_folders, list_fanduel_csvs
 from src.features import build_model_table, make_course_fit_weights
 from src.simulator import SimConfig, simulate_tournament
-from src.fanduel import load_fanduel_csv, optimize_fanduel_lineup
+from src.fanduel import optimize_fanduel_lineup
 
 
-# ==========================
-# CONFIG
-# ==========================
 APP_TITLE = "SignalAI • PGA Simulator"
-PASSWORD = "signalai123"  # requested
+PASSWORD = "signalai123"
 
 
-# ==========================
-# SIMPLE PASSWORD GATE
-# ==========================
 def password_gate() -> bool:
     if "auth_ok" not in st.session_state:
         st.session_state.auth_ok = False
@@ -40,14 +31,10 @@ def password_gate() -> bool:
             st.rerun()
         else:
             st.error("Incorrect password.")
-    st.caption("Password protection is app-level (not enterprise security).")
     return False
 
 
-# ==========================
-# HELPERS
-# ==========================
-def _safe_int(x, default=0):
+def _safe_int(x, default=None):
     try:
         return int(x)
     except Exception:
@@ -61,9 +48,6 @@ def _format_money(x):
         return str(x)
 
 
-# ==========================
-# APP
-# ==========================
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
 
@@ -73,9 +57,6 @@ def main():
     st.title(APP_TITLE)
     st.caption("File-driven weekly simulator + FanDuel lineup builder (no API calls).")
 
-    # -------------
-    # Sidebar: Data source
-    # -------------
     st.sidebar.header("Weekly Data")
     repo_root = Path(__file__).parent
     weekly_root = repo_root / "data" / "weekly"
@@ -95,9 +76,19 @@ def main():
     if data_mode == "Use data/weekly folder":
         if not week_folders:
             st.sidebar.warning("No week folders found in data/weekly yet.")
-        week_label = st.sidebar.selectbox("Select week folder", options=week_folders, index=0 if week_folders else None)
-        if week_label:
-            weekly_data = load_weekly_data(weekly_root / week_label)
+            st.info("Create a folder under data/weekly/<week_name>/ and add your 3 JSONs + FanDuel CSV.")
+            st.stop()
+
+        week_label = st.sidebar.selectbox("Select week folder", options=week_folders, index=0)
+        folder_path = weekly_root / week_label
+
+        csv_choices = list_fanduel_csvs(folder_path)
+        if not csv_choices:
+            st.sidebar.error("No CSV found in that week folder. Put your FanDuel CSV in it (any name).")
+            st.stop()
+
+        fd_choice = st.sidebar.selectbox("FanDuel CSV in folder", csv_choices, index=0)
+        weekly_data = load_weekly_data(folder_path, fanduel_filename=fd_choice)
 
     else:
         st.sidebar.info("Upload the four files for a one-off run.")
@@ -120,23 +111,18 @@ def main():
         st.info("Load a week folder (data/weekly/...) or upload the files to begin.")
         st.stop()
 
-    # -------------
     # Tournament selection
-    # -------------
     st.sidebar.header("Tournament")
     tourney_df = weekly_data.schedule_tournaments.copy()
-    tourney_df["label"] = tourney_df["name"] + " (" + tourney_df["start_date"].astype(str) + ")"
+    tourney_df["label"] = tourney_df["name"].astype(str) + " (" + tourney_df["start_date"].astype(str) + ")"
     sel_label = st.sidebar.selectbox("Select tournament", tourney_df["label"].tolist(), index=0)
     sel_row = tourney_df.loc[tourney_df["label"] == sel_label].iloc[0]
     tournament_id = sel_row["id"]
     tournament_name = sel_row["name"]
 
-    # Course info (if present)
     course_meta = weekly_data.get_course_meta(tournament_id)
 
-    # -------------
-    # Load FanDuel field
-    # -------------
+    # Field (FanDuel)
     fd_players = weekly_data.fanduel_players.copy()
     st.sidebar.header("Field")
     st.sidebar.caption(f"FanDuel rows: {len(fd_players):,}")
@@ -144,43 +130,31 @@ def main():
     max_salary = st.sidebar.slider("Max salary filter", 0, 15000, 15000, step=100)
     fd_players = fd_players[(fd_players["Salary"] >= min_salary) & (fd_players["Salary"] <= max_salary)].copy()
 
-    # -------------
     # Build modeling table
-    # -------------
     model_table = build_model_table(
         fanduel=fd_players,
         stats=weekly_data.player_stats,
         wgr=weekly_data.wgr_players,
     )
-
-    # Basic sanity
     if model_table.empty:
         st.error("No players matched between FanDuel CSV and your stats/WGR files.")
         st.stop()
 
-    # -------------
-    # Sidebar: Course-fit adjustments (based on available stats fields)
-    # -------------
+    # Course-fit sliders
     st.sidebar.header("Course-fit sliders")
-    st.sidebar.caption("These weights adjust a player’s expected scoring via the stats you have this week.")
+    defaults = make_course_fit_weights()
 
-    default_weights = make_course_fit_weights()
-
-    w_sg_total = st.sidebar.slider("Weight: SG Total", -3.0, 3.0, default_weights["sg_total"], 0.05)
-    w_sg_t2g = st.sidebar.slider("Weight: SG Tee-to-Green", -3.0, 3.0, default_weights["sg_t2g"], 0.05)
-    w_putt = st.sidebar.slider("Weight: Putting proxy (strokes_gained)", -3.0, 3.0, default_weights["sg_putt_proxy"], 0.05)
-    w_birdies = st.sidebar.slider("Weight: Birdies/round", -3.0, 3.0, default_weights["birdies_per_round"], 0.05)
-    w_gir = st.sidebar.slider("Weight: GIR%", -3.0, 3.0, default_weights["gir_pct"], 0.05)
-    w_drive = st.sidebar.slider("Weight: Driving distance", -3.0, 3.0, default_weights["drive_avg"], 0.05)
-    w_acc = st.sidebar.slider("Weight: Driving accuracy", -3.0, 3.0, default_weights["drive_acc"], 0.05)
-    w_scramble = st.sidebar.slider("Weight: Scrambling%", -3.0, 3.0, default_weights["scrambling_pct"], 0.05)
-
-    # WGR influence (rank -> strength)
+    w_sg_total = st.sidebar.slider("Weight: SG Total", -3.0, 3.0, defaults["sg_total"], 0.05)
+    w_sg_t2g = st.sidebar.slider("Weight: SG Tee-to-Green", -3.0, 3.0, defaults["sg_t2g"], 0.05)
+    w_putt = st.sidebar.slider("Weight: Putting proxy (strokes_gained)", -3.0, 3.0, defaults["sg_putt_proxy"], 0.05)
+    w_birdies = st.sidebar.slider("Weight: Birdies/round", -3.0, 3.0, defaults["birdies_per_round"], 0.05)
+    w_gir = st.sidebar.slider("Weight: GIR%", -3.0, 3.0, defaults["gir_pct"], 0.05)
+    w_drive = st.sidebar.slider("Weight: Driving distance", -3.0, 3.0, defaults["drive_avg"], 0.05)
+    w_acc = st.sidebar.slider("Weight: Driving accuracy", -3.0, 3.0, defaults["drive_acc"], 0.05)
+    w_scramble = st.sidebar.slider("Weight: Scrambling%", -3.0, 3.0, defaults["scrambling_pct"], 0.05)
     wgr_weight = st.sidebar.slider("WGR impact (rank → strength)", 0.0, 3.0, 1.0, 0.05)
 
-    # -------------
-    # Sidebar: Simulation controls
-    # -------------
+    # Simulation controls
     st.sidebar.header("Simulation")
     n_sims = st.sidebar.slider("Simulations", 100, 50000, 5000, step=100)
     rng_seed = st.sidebar.text_input("RNG seed (optional)", value="")
@@ -188,13 +162,10 @@ def main():
     round_sd = st.sidebar.slider("Round score volatility (stdev)", 1.0, 4.0, 2.3, 0.05)
     course_difficulty = st.sidebar.slider("Course difficulty shift (strokes)", -2.0, 2.0, 0.0, 0.05)
 
-    # -------------
-    # Main: Header / course card
-    # -------------
+    # Header
     colA, colB, colC = st.columns([2.2, 1.2, 1.2])
-
     with colA:
-        st.subheader(f"{tournament_name}")
+        st.subheader(str(tournament_name))
         st.write(f"Selected data: **{week_label}**")
         if course_meta:
             st.caption(
@@ -202,16 +173,11 @@ def main():
                 f"Par {course_meta.get('par', '—')} • "
                 f"Yardage {course_meta.get('yardage', '—')}"
             )
-
     with colB:
         st.metric("Field size", f"{len(model_table):,}")
-
     with colC:
         st.metric("Salary cap", _format_money(60000))
 
-    # -------------
-    # Preview table
-    # -------------
     st.markdown("### Field (merged)")
     preview_cols = [
         "player_id", "name", "Salary", "FPPG",
@@ -220,13 +186,12 @@ def main():
         "birdies_per_round",
     ]
     show_cols = [c for c in preview_cols if c in model_table.columns]
-    st.dataframe(model_table[show_cols].sort_values(["Salary", "FPPG"], ascending=[False, False]), use_container_width=True)
+    st.dataframe(
+        model_table[show_cols].sort_values(["Salary", "FPPG"], ascending=[False, False]),
+        use_container_width=True
+    )
 
-    # -------------
-    # Run simulation
-    # -------------
     st.markdown("## Tournament simulation")
-
     run_btn = st.button("Run simulation", type="primary", use_container_width=True)
 
     if run_btn:
@@ -252,47 +217,34 @@ def main():
         )
 
         results = simulate_tournament(model_table, cfg)
-
         st.success("Simulation complete.")
 
-        # Summary
-        st.markdown("### Top win / top-10 / make-cut probabilities")
         summ_cols = ["name", "Salary", "FPPG", "win_pct", "top10_pct", "make_cut_pct", "avg_finish", "avg_total_score", "proj_fd_points"]
-        summ_cols = [c for c in summ_cols if c in results.columns]
-        st.dataframe(results.sort_values("win_pct", ascending=False)[summ_cols].head(40), use_container_width=True)
+        st.dataframe(results[summ_cols].head(50), use_container_width=True)
 
-        # Download results
-        out_dir = (repo_root / "data" / "history")
+        out_dir = repo_root / "data" / "history"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"sim_results_{tournament_id}.csv"
         results.to_csv(out_path, index=False)
 
-        with open(out_path, "rb") as f:
-            st.download_button(
-                "Download simulation CSV",
-                data=f,
-                file_name=out_path.name,
-                mime="text/csv",
-                use_container_width=True
-            )
+        st.download_button(
+            "Download simulation CSV",
+            data=results.to_csv(index=False).encode("utf-8"),
+            file_name=out_path.name,
+            mime="text/csv",
+            use_container_width=True
+        )
 
-        # -------------
-        # FanDuel lineup optimizer
-        # -------------
         st.markdown("## FanDuel lineup builder (6 golfers, ≤ $60,000)")
-
-        # Candidate pool controls
         col1, col2, col3 = st.columns([1.2, 1.2, 1.6])
         with col1:
-            candidate_k = st.number_input("Candidate pool size (search space)", 12, 60, 30, 1)
+            candidate_k = st.number_input("Candidate pool size (search space)", 12, 80, 30, 1)
         with col2:
             lock_names = st.multiselect("Lock players (optional)", results["name"].tolist(), default=[])
         with col3:
             exclude_names = st.multiselect("Exclude players (optional)", results["name"].tolist(), default=[])
 
-        build_btn = st.button("Build best lineup", use_container_width=True)
-
-        if build_btn:
+        if st.button("Build best lineup", use_container_width=True):
             lineup, meta = optimize_fanduel_lineup(
                 sim_results=results,
                 salary_cap=60000,
@@ -306,25 +258,20 @@ def main():
                 st.error("No valid lineup found under the constraints.")
             else:
                 st.success("Lineup found.")
-                st.dataframe(lineup[["name", "Salary", "FPPG", "proj_fd_points", "win_pct", "top10_pct", "make_cut_pct"]], use_container_width=True)
-
+                st.dataframe(
+                    lineup[["name", "Salary", "FPPG", "proj_fd_points", "win_pct", "top10_pct", "make_cut_pct"]],
+                    use_container_width=True
+                )
                 st.metric("Total salary", _format_money(meta["total_salary"]))
                 st.metric("Projected FD points", f"{meta['total_points']:.2f}")
 
-                # Download lineup
-                lineup_out = out_dir / f"fanduel_lineup_{tournament_id}.csv"
-                lineup.to_csv(lineup_out, index=False)
-                with open(lineup_out, "rb") as f:
-                    st.download_button(
-                        "Download lineup CSV",
-                        data=f,
-                        file_name=lineup_out.name,
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-
-    # Footer
-    st.caption("Tip: Keep weekly files in data/weekly/<week_folder>/ with consistent filenames.")
+                st.download_button(
+                    "Download lineup CSV",
+                    data=lineup.to_csv(index=False).encode("utf-8"),
+                    file_name=f"fanduel_lineup_{tournament_id}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
 
 
 if __name__ == "__main__":

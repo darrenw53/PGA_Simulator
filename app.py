@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import numpy as np
-import pandas as pd
 import streamlit as st
 
 from src.file_loader import WeeklyData, load_weekly_data, list_week_folders, list_fanduel_csvs
@@ -53,6 +51,12 @@ def main():
 
     if not password_gate():
         return
+
+    # persistent slots
+    if "sim_results" not in st.session_state:
+        st.session_state.sim_results = None
+    if "last_tournament_id" not in st.session_state:
+        st.session_state.last_tournament_id = None
 
     st.title(APP_TITLE)
     st.caption("File-driven weekly simulator + FanDuel lineup builder (no API calls).")
@@ -117,8 +121,8 @@ def main():
     tourney_df["label"] = tourney_df["name"].astype(str) + " (" + tourney_df["start_date"].astype(str) + ")"
     sel_label = st.sidebar.selectbox("Select tournament", tourney_df["label"].tolist(), index=0)
     sel_row = tourney_df.loc[tourney_df["label"] == sel_label].iloc[0]
-    tournament_id = sel_row["id"]
-    tournament_name = sel_row["name"]
+    tournament_id = str(sel_row["id"])
+    tournament_name = str(sel_row["name"])
 
     course_meta = weekly_data.get_course_meta(tournament_id)
 
@@ -140,7 +144,7 @@ def main():
         st.error("No players matched between FanDuel CSV and your stats/WGR files.")
         st.stop()
 
-    # Course-fit sliders
+    # Sidebar sliders: course fit
     st.sidebar.header("Course-fit sliders")
     defaults = make_course_fit_weights()
 
@@ -165,7 +169,7 @@ def main():
     # Header
     colA, colB, colC = st.columns([2.2, 1.2, 1.2])
     with colA:
-        st.subheader(str(tournament_name))
+        st.subheader(tournament_name)
         st.write(f"Selected data: **{week_label}**")
         if course_meta:
             st.caption(
@@ -186,15 +190,13 @@ def main():
         "birdies_per_round",
     ]
     show_cols = [c for c in preview_cols if c in model_table.columns]
-    st.dataframe(
-        model_table[show_cols].sort_values(["Salary", "FPPG"], ascending=[False, False]),
-        use_container_width=True
-    )
+    st.dataframe(model_table[show_cols], use_container_width=True)
 
+    # -----------------------
+    # SIMULATION (stores to session_state)
+    # -----------------------
     st.markdown("## Tournament simulation")
-    run_btn = st.button("Run simulation", type="primary", use_container_width=True)
-
-    if run_btn:
+    if st.button("Run simulation", type="primary", use_container_width=True):
         weights = {
             "sg_total": w_sg_total,
             "sg_t2g": w_sg_t2g,
@@ -216,35 +218,48 @@ def main():
             course_fit_weights=weights,
         )
 
-        results = simulate_tournament(model_table, cfg)
+        with st.spinner("Simulating..."):
+            results = simulate_tournament(model_table, cfg)
+
+        st.session_state.sim_results = results
+        st.session_state.last_tournament_id = tournament_id
+
         st.success("Simulation complete.")
 
-        summ_cols = ["name", "Salary", "FPPG", "win_pct", "top10_pct", "make_cut_pct", "avg_finish", "avg_total_score", "proj_fd_points"]
+    # Always show last results if available
+    results = st.session_state.sim_results
+    if results is not None and not results.empty:
+        st.markdown("### Latest simulation results")
+        summ_cols = ["name", "Salary", "FPPG", "win_pct", "top10_pct", "make_cut_pct", "avg_finish", "proj_fd_points"]
         st.dataframe(results[summ_cols].head(50), use_container_width=True)
-
-        out_dir = repo_root / "data" / "history"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"sim_results_{tournament_id}.csv"
-        results.to_csv(out_path, index=False)
 
         st.download_button(
             "Download simulation CSV",
             data=results.to_csv(index=False).encode("utf-8"),
-            file_name=out_path.name,
+            file_name=f"sim_results_{st.session_state.last_tournament_id}.csv",
             mime="text/csv",
-            use_container_width=True
+            use_container_width=True,
         )
 
-        st.markdown("## FanDuel lineup builder (6 golfers, ≤ $60,000)")
-        col1, col2, col3 = st.columns([1.2, 1.2, 1.6])
-        with col1:
-            candidate_k = st.number_input("Candidate pool size (search space)", 12, 80, 30, 1)
-        with col2:
-            lock_names = st.multiselect("Lock players (optional)", results["name"].tolist(), default=[])
-        with col3:
-            exclude_names = st.multiselect("Exclude players (optional)", results["name"].tolist(), default=[])
+    # -----------------------
+    # LINEUP BUILDER (ALWAYS AVAILABLE when results exist)
+    # -----------------------
+    st.markdown("## FanDuel lineup builder (6 golfers, ≤ $60,000)")
 
-        if st.button("Build best lineup", use_container_width=True):
+    if results is None or results.empty:
+        st.info("Run a simulation first. Then build a lineup from those results.")
+        st.stop()
+
+    col1, col2, col3 = st.columns([1.2, 1.2, 1.6])
+    with col1:
+        candidate_k = st.number_input("Candidate pool size (search space)", 12, 120, 40, 1)
+    with col2:
+        lock_names = st.multiselect("Lock players (optional)", results["name"].tolist(), default=[])
+    with col3:
+        exclude_names = st.multiselect("Exclude players (optional)", results["name"].tolist(), default=[])
+
+    if st.button("Build best lineup", use_container_width=True):
+        with st.spinner("Searching best lineup under $60,000..."):
             lineup, meta = optimize_fanduel_lineup(
                 sim_results=results,
                 salary_cap=60000,
@@ -254,24 +269,27 @@ def main():
                 exclude_names=set(exclude_names),
             )
 
-            if lineup is None or lineup.empty:
-                st.error("No valid lineup found under the constraints.")
-            else:
-                st.success("Lineup found.")
-                st.dataframe(
-                    lineup[["name", "Salary", "FPPG", "proj_fd_points", "win_pct", "top10_pct", "make_cut_pct"]],
-                    use_container_width=True
-                )
-                st.metric("Total salary", _format_money(meta["total_salary"]))
-                st.metric("Projected FD points", f"{meta['total_points']:.2f}")
+        if lineup is None or lineup.empty:
+            st.error(
+                "No valid lineup found under the current constraints. "
+                "Try increasing candidate pool size or removing locks."
+            )
+        else:
+            st.success("Lineup found.")
+            st.dataframe(
+                lineup[["name", "Salary", "FPPG", "proj_fd_points", "win_pct", "top10_pct", "make_cut_pct"]],
+                use_container_width=True
+            )
+            st.metric("Total salary", _format_money(meta["total_salary"]))
+            st.metric("Projected FD points", f"{meta['total_points']:.2f}")
 
-                st.download_button(
-                    "Download lineup CSV",
-                    data=lineup.to_csv(index=False).encode("utf-8"),
-                    file_name=f"fanduel_lineup_{tournament_id}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+            st.download_button(
+                "Download lineup CSV",
+                data=lineup.to_csv(index=False).encode("utf-8"),
+                file_name=f"fanduel_lineup_{st.session_state.last_tournament_id}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
 
 if __name__ == "__main__":

@@ -13,10 +13,22 @@ def simulate_tournament(
     volatility_mult: float,
     rng_seed: int | None = None,
 ) -> pd.DataFrame:
+
+    # --- Hard guard: no players -> return empty output instead of crash ---
+    if players is None or len(players) == 0:
+        return pd.DataFrame(
+            columns=["player_id", "player_name", "win_%", "top5_%", "make_cut_%", "avg_finish"]
+        )
+    # ---------------------------------------------------------------------
+
     rng = np.random.default_rng(rng_seed)
 
     # Player mean adjustment (better players score lower)
-    strength = players["base_strength"].to_numpy() if "base_strength" in players.columns else np.zeros(len(players))
+    if "base_strength" in players.columns:
+        strength = players["base_strength"].to_numpy()
+    else:
+        strength = np.zeros(len(players), dtype=float)
+
     strength = (strength - np.nanmean(strength)) / (np.nanstd(strength) + 1e-9)
 
     player_mu = tour_mean_round - field_strength_mult * 0.6 * strength
@@ -24,7 +36,7 @@ def simulate_tournament(
 
     sd = base_sd_round * volatility_mult
 
-    # ---- FIX: avoid fillna(Index) TypeError by using Series fallback ----
+    # Robust IDs/names
     if "id" in players.columns:
         ids_series = players["id"]
     else:
@@ -37,7 +49,6 @@ def simulate_tournament(
         names = players["name"].where(players["name"].notna(), ids).astype(str).to_numpy()
     else:
         names = ids
-    # -------------------------------------------------------------------
 
     wins = np.zeros(len(players), dtype=int)
     top5 = np.zeros(len(players), dtype=int)
@@ -56,7 +67,6 @@ def simulate_tournament(
         scores = player_mu[:, None] + shocks
         total2 = scores[:, :2].sum(axis=1)
 
-        # Cut after 2 rounds
         cut_top_n_eff = int(min(max(cut_top_n, 1), len(players)))
         cut_line_idx = np.argsort(total2)[:cut_top_n_eff]
 
@@ -67,11 +77,16 @@ def simulate_tournament(
         total4[in_cut] = scores[in_cut].sum(axis=1)
 
         order = np.argsort(total4)
+
+        # Extra safety: if order is empty (shouldn't happen), skip sim
+        if order.size == 0:
+            continue
+
         finish_pos = np.empty(len(players), dtype=int)
         finish_pos[order] = np.arange(1, len(players) + 1)
 
         wins[order[0]] += 1
-        top5[order[:5]] += 1
+        top5[order[: min(5, len(order))]] += 1
         made_cut[in_cut] += 1
         avg_finish += finish_pos
 

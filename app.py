@@ -258,6 +258,13 @@ def main():
     with col3:
         exclude_names = st.multiselect("Exclude players (optional)", results["name"].tolist(), default=[])
 
+    # ✅ NEW SLIDER: blend simulation vs FPPG when building lineup
+    blend_alpha = st.slider(
+        "Lineup scoring weight (Simulation vs FanDuel FPPG)",
+        0.0, 1.0, 0.75, 0.05,
+        help="0.0 = use only FanDuel FPPG, 1.0 = use only your sim projection. Middle values blend both."
+    )
+
     if st.button("Build best lineup", use_container_width=True):
         with st.spinner("Searching best lineup under $60,000..."):
             lineup, meta = optimize_fanduel_lineup(
@@ -267,6 +274,7 @@ def main():
                 candidate_pool=int(candidate_k),
                 lock_names=set(lock_names),
                 exclude_names=set(exclude_names),
+                blend_alpha=float(blend_alpha),  # ✅ pass slider into optimizer
             )
 
         if lineup is None or lineup.empty:
@@ -276,12 +284,17 @@ def main():
             )
         else:
             st.success("Lineup found.")
-            st.dataframe(
-                lineup[["name", "Salary", "FPPG", "proj_fd_points", "win_pct", "top10_pct", "make_cut_pct"]],
-                use_container_width=True
-            )
-            st.metric("Total salary", _format_money(meta["total_salary"]))
-            st.metric("Projected FD points", f"{meta['total_points']:.2f}")
+            # If your updated fanduel.py adds blend_points, show it when present
+            cols = ["name", "Salary", "FPPG", "proj_fd_points"]
+            if "blend_points" in lineup.columns:
+                cols.insert(4, "blend_points")
+            cols += ["win_pct", "top10_pct", "make_cut_pct"]
+            cols = [c for c in cols if c in lineup.columns]
+
+            st.dataframe(lineup[cols], use_container_width=True)
+
+            st.metric("Total salary", _format_money(meta.get("total_salary", lineup["Salary"].sum())))
+            st.metric("Projected lineup score", f"{meta.get('total_points', 0.0):.2f}")
 
             st.download_button(
                 "Download lineup CSV",

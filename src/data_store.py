@@ -11,9 +11,3 @@ def save_json(obj: dict, name: str) -> Path:
     path = HIST_DIR / f"{name}_{ts}.json"
     path.write_text(json.dumps(obj, indent=2))
     return path
-
-def load_latest(prefix: str):
-    files = sorted(HIST_DIR.glob(f"{prefix}_*.json"))
-    if not files:
-        return None
-    return json.loads(files[-1].read_text())

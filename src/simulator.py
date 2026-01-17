@@ -14,21 +14,14 @@ def simulate_tournament(
     rng_seed: int | None = None,
 ) -> pd.DataFrame:
 
-    # --- Hard guard: no players -> return empty output instead of crash ---
     if players is None or len(players) == 0:
         return pd.DataFrame(
             columns=["player_id", "player_name", "win_%", "top5_%", "make_cut_%", "avg_finish"]
         )
-    # ---------------------------------------------------------------------
 
     rng = np.random.default_rng(rng_seed)
 
-    # Player mean adjustment (better players score lower)
-    if "base_strength" in players.columns:
-        strength = players["base_strength"].to_numpy()
-    else:
-        strength = np.zeros(len(players), dtype=float)
-
+    strength = players["base_strength"].to_numpy() if "base_strength" in players.columns else np.zeros(len(players))
     strength = (strength - np.nanmean(strength)) / (np.nanstd(strength) + 1e-9)
 
     player_mu = tour_mean_round - field_strength_mult * 0.6 * strength
@@ -36,19 +29,8 @@ def simulate_tournament(
 
     sd = base_sd_round * volatility_mult
 
-    # Robust IDs/names
-    if "id" in players.columns:
-        ids_series = players["id"]
-    else:
-        ids_series = players.index.to_series().astype(str)
-
-    fallback_ids = players.index.to_series().astype(str)
-    ids = ids_series.where(ids_series.notna(), fallback_ids).astype(str).to_numpy()
-
-    if "name" in players.columns:
-        names = players["name"].where(players["name"].notna(), ids).astype(str).to_numpy()
-    else:
-        names = ids
+    ids = players["id"].astype(str).to_numpy() if "id" in players.columns else players.index.to_series().astype(str).to_numpy()
+    names = players["name"].astype(str).to_numpy() if "name" in players.columns else ids
 
     wins = np.zeros(len(players), dtype=int)
     top5 = np.zeros(len(players), dtype=int)
@@ -77,8 +59,6 @@ def simulate_tournament(
         total4[in_cut] = scores[in_cut].sum(axis=1)
 
         order = np.argsort(total4)
-
-        # Extra safety: if order is empty (shouldn't happen), skip sim
         if order.size == 0:
             continue
 

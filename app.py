@@ -7,7 +7,10 @@ from src.file_loader import WeeklyData, load_weekly_data, list_week_folders, lis
 from src.features import build_model_table, make_course_fit_weights
 from src.simulator import SimConfig, simulate_tournament
 from src.fanduel import optimize_fanduel_lineup
-from src.run_store import list_runs, load_predictions, load_settings, save_run, save_actuals_csv
+from src.run_store import list_runs, load_predictions, save_run, save_actuals_csv
+
+# NEW: early-season reference priors
+from src.reference import load_reference_results_tsv, compute_reference_priors
 
 
 APP_TITLE = "SignalAI • PGA Simulator"
@@ -47,6 +50,11 @@ def _format_money(x):
         return str(x)
 
 
+@st.cache_data(show_spinner=False)
+def _load_reference_df(path_str: str):
+    return load_reference_results_tsv(Path(path_str))
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
 
@@ -63,6 +71,10 @@ def main():
     if "last_run_record" not in st.session_state:
         st.session_state.last_run_record = None
 
+    # NEW: seed default slider state keys (so we can programmatically set them)
+    if "round_sd" not in st.session_state:
+        st.session_state.round_sd = 2.3
+
     st.title(APP_TITLE)
     st.caption("File-driven weekly simulator + FanDuel lineup builder + saved runs (no API calls).")
 
@@ -75,10 +87,7 @@ def main():
     runs = list_runs(repo_root)
 
     if runs:
-        run_labels = [
-            f"{r.tournament_name} • {r.run_id} • {r.created_utc}"
-            for r in runs
-        ]
+        run_labels = [f"{r.tournament_name} • {r.run_id} • {r.created_utc}" for r in runs]
         sel_idx = st.sidebar.selectbox(
             "Load a past run",
             options=list(range(len(runs))),
@@ -97,13 +106,28 @@ def main():
 
         # downloads from sidebar
         with open(sel_run.predictions_path, "rb") as f:
-            st.sidebar.download_button("Download predictions.csv", f, file_name=f"{sel_run.tournament_id}_{sel_run.run_id}_predictions.csv", use_container_width=True)
+            st.sidebar.download_button(
+                "Download predictions.csv",
+                f,
+                file_name=f"{sel_run.tournament_id}_{sel_run.run_id}_predictions.csv",
+                use_container_width=True,
+            )
         with open(sel_run.settings_path, "rb") as f:
-            st.sidebar.download_button("Download settings.json", f, file_name=f"{sel_run.tournament_id}_{sel_run.run_id}_settings.json", use_container_width=True)
+            st.sidebar.download_button(
+                "Download settings.json",
+                f,
+                file_name=f"{sel_run.tournament_id}_{sel_run.run_id}_settings.json",
+                use_container_width=True,
+            )
 
         if sel_run.actuals_path and sel_run.actuals_path.exists():
             with open(sel_run.actuals_path, "rb") as f:
-                st.sidebar.download_button("Download actuals.csv", f, file_name=f"{sel_run.tournament_id}_{sel_run.run_id}_actuals.csv", use_container_width=True)
+                st.sidebar.download_button(
+                    "Download actuals.csv",
+                    f,
+                    file_name=f"{sel_run.tournament_id}_{sel_run.run_id}_actuals.csv",
+                    use_container_width=True,
+                )
     else:
         st.sidebar.caption("No saved runs yet. Run a simulation with Auto-save enabled.")
 
@@ -130,7 +154,10 @@ def main():
     if data_mode == "Use data/weekly folder":
         if not week_folders:
             st.sidebar.warning("No week folders found in data/weekly yet.")
-            st.info("Create data/weekly/<week_name>/ and add schedule.json, player_statistics.json, wgr_rankings.json, plus your FanDuel CSV.")
+            st.info(
+                "Create data/weekly/<week_name>/ and add schedule.json, player_statistics.json, "
+                "wgr_rankings.json, plus your FanDuel CSV."
+            )
             st.stop()
 
         week_label = st.sidebar.selectbox("Select week folder", options=week_folders, index=0)
@@ -178,6 +205,49 @@ def main():
     course_meta = weekly_data.get_course_meta(tournament_id)
 
     # =========================
+    # EARLY-SEASON REFERENCE (SIDEBAR)
+    # =========================
+    st.sidebar.divider()
+    st.sidebar.header("Early-season reference")
+
+    ref_path = repo_root / "data" / "reference" / "pga_results_2001-2025.tsv"
+    use_ref = st.sidebar.checkbox(
+        "Use historical priors (recommended early season)",
+        value=True,
+        help="Loads historical results and suggests realistic priors (e.g., Round SD).",
+    )
+
+    suggested_round_sd = None
+    if use_ref:
+        if not ref_path.exists():
+            st.sidebar.warning("Missing reference TSV.")
+            st.sidebar.caption("Add: data/reference/pga_results_2001-2025.tsv")
+        else:
+            era = st.sidebar.selectbox("Era", ["2015-2025 (recommended)", "2001-2025 (all)"], index=0)
+            seasons = (2015, 2025) if era.startswith("2015") else (2001, 2025)
+
+            try:
+                ref_df = _load_reference_df(str(ref_path))
+                priors = compute_reference_priors(ref_df, seasons=seasons)
+
+                suggested_round_sd = float(priors.suggested_round_sd)
+
+                st.sidebar.metric("Suggested Round SD", f"{priors.suggested_round_sd:.2f}")
+                st.sidebar.caption(
+                    f"Winner score (median): {priors.winner_score_median:.1f} to par\n\n"
+                    f"IQR: {priors.winner_score_iqr[0]:.0f} to {priors.winner_score_iqr[1]:.0f}"
+                )
+
+                if st.sidebar.button("Apply suggested Round SD", use_container_width=True):
+                    # Updates the slider value (keyed)
+                    st.session_state.round_sd = suggested_round_sd
+                    st.rerun()
+
+            except Exception as e:
+                st.sidebar.error("Failed to load reference priors.")
+                st.sidebar.caption(str(e))
+
+    # =========================
     # FIELD + MODEL TABLE
     # =========================
     fd_players = weekly_data.fanduel_players.copy()
@@ -216,7 +286,16 @@ def main():
     n_sims = st.sidebar.slider("Simulations", 100, 50000, 5000, step=100)
     rng_seed = st.sidebar.text_input("RNG seed (optional)", value="")
     cut_line = st.sidebar.slider("Cut size (after R2)", 50, 80, 65, step=1)
-    round_sd = st.sidebar.slider("Round score volatility (stdev)", 1.0, 4.0, 2.3, 0.05)
+
+    # CHANGED: Round SD slider uses key so we can apply suggested value
+    round_sd = st.sidebar.slider(
+        "Round score volatility (stdev)",
+        1.0, 4.0,
+        float(st.session_state.round_sd),
+        0.05,
+        key="round_sd",
+    )
+
     course_difficulty = st.sidebar.slider("Course difficulty shift (strokes)", -2.0, 2.0, 0.0, 0.05)
 
     st.sidebar.header("Run Saving")
@@ -306,6 +385,12 @@ def main():
                     "min_salary": int(min_salary),
                     "max_salary": int(max_salary),
                 },
+                # NEW: record reference context (if used)
+                "reference": {
+                    "enabled": bool(use_ref),
+                    "ref_file_present": bool(ref_path.exists()),
+                    "suggested_round_sd": suggested_round_sd,
+                },
             }
 
             rec = save_run(
@@ -342,9 +427,19 @@ def main():
             st.markdown("### Saved run files")
             c1, c2, c3 = st.columns(3)
             with open(rec.predictions_path, "rb") as f:
-                c1.download_button("Download saved predictions.csv", f, file_name=f"{rec.tournament_id}_{rec.run_id}_predictions.csv", use_container_width=True)
+                c1.download_button(
+                    "Download saved predictions.csv",
+                    f,
+                    file_name=f"{rec.tournament_id}_{rec.run_id}_predictions.csv",
+                    use_container_width=True,
+                )
             with open(rec.settings_path, "rb") as f:
-                c2.download_button("Download saved settings.json", f, file_name=f"{rec.tournament_id}_{rec.run_id}_settings.json", use_container_width=True)
+                c2.download_button(
+                    "Download saved settings.json",
+                    f,
+                    file_name=f"{rec.tournament_id}_{rec.run_id}_settings.json",
+                    use_container_width=True,
+                )
 
             # Placeholder: upload actuals later
             st.markdown("### Import actual results (placeholder)")
@@ -355,7 +450,12 @@ def main():
                 st.success(f"Saved actuals to: {path.as_posix()}")
 
                 with open(path, "rb") as f:
-                    c3.download_button("Download actuals.csv", f, file_name=f"{rec.tournament_id}_{rec.run_id}_actuals.csv", use_container_width=True)
+                    c3.download_button(
+                        "Download actuals.csv",
+                        f,
+                        file_name=f"{rec.tournament_id}_{rec.run_id}_actuals.csv",
+                        use_container_width=True,
+                    )
 
     # =========================
     # LINEUP BUILDER

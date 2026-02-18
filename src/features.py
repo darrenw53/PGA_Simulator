@@ -29,7 +29,7 @@ def build_model_table(
       SportsRadar player stats (player_id + stats)
       WGR (player_id + rank)
     Matching strategy:
-      1) exact join on name (fd_name vs first+last from stats)
+      1) name join (normalized to avoid punctuation/spacing issues)
       2) if you later add a master mapping file, we can do ID matching.
     """
 
@@ -37,19 +37,42 @@ def build_model_table(
     st = stats.copy()
     wg = wgr.copy()
 
-    st["name"] = (st["first_name"].fillna("").astype(str).str.strip() + " " + st["last_name"].fillna("").astype(str).str.strip()).str.strip()
+    st["name"] = (
+        st["first_name"].fillna("").astype(str).str.strip()
+        + " "
+        + st["last_name"].fillna("").astype(str).str.strip()
+    ).str.strip()
 
-    # Name join
+    def _clean_name(x: object) -> str:
+        """Normalize player names so minor formatting differences don't break merges."""
+        s = "" if x is None else str(x)
+        s = s.lower().strip()
+        # Common cleanup
+        for ch in [",", ".", "'", "\"", "`"]:
+            s = s.replace(ch, "")
+        # Collapse repeated whitespace
+        s = " ".join(s.split())
+        return s
+
+    fd["fd_name_clean"] = fd["fd_name"].apply(_clean_name)
+    st["name_clean"] = st["name"].apply(_clean_name)
+
+    # Name join (cleaned)
     merged = fd.merge(
         st,
-        left_on="fd_name",
-        right_on="name",
+        left_on="fd_name_clean",
+        right_on="name_clean",
         how="left",
         suffixes=("", "_stats"),
     )
 
     # Some FanDuel entries might not match; keep only matched rows
     merged = merged.dropna(subset=["player_id"]).copy()
+
+    # Drop helper columns to avoid clutter/duplication.
+    for c in ["fd_name_clean", "name_clean"]:
+        if c in merged.columns:
+            merged = merged.drop(columns=[c])
 
     merged = merged.merge(wg[["player_id", "wgr_rank"]], on="player_id", how="left")
 

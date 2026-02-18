@@ -319,8 +319,18 @@ def main():
     fd_players = weekly_data.fanduel_players.copy()
     st.sidebar.header("Field")
     st.sidebar.caption(f"FanDuel rows: {len(fd_players):,}")
-    min_salary = st.sidebar.slider("Min salary filter", 0, 15000, 0, step=100)
-    max_salary = st.sidebar.slider("Max salary filter", 0, 15000, 15000, step=100)
+    # Determine dynamic salary bounds (Signature Events can exceed 15,000)
+    try:
+        salary_max = int(pd.to_numeric(fd_players["Salary"], errors="coerce").max())
+        # NaN guard
+        if salary_max != salary_max:
+            salary_max = 20000
+    except Exception:
+        salary_max = 20000
+    salary_max = max(20000, salary_max)
+
+    min_salary = st.sidebar.slider("Min salary filter", 0, salary_max, 0, step=100)
+    max_salary = st.sidebar.slider("Max salary filter", 0, salary_max, salary_max, step=100)
     fd_players = fd_players[(fd_players["Salary"] >= min_salary) & (fd_players["Salary"] <= max_salary)].copy()
 
     model_table = build_model_table(
